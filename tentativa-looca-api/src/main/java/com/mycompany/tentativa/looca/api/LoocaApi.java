@@ -8,6 +8,7 @@ import com.mycompany.tentativa.looca.api.conexao.Conexao;
 import com.github.britooo.looca.api.core.Looca;
 import com.github.britooo.looca.api.group.discos.Disco;
 import com.github.britooo.looca.api.group.discos.DiscoGrupo;
+import com.github.britooo.looca.api.group.discos.Volume;
 import com.github.britooo.looca.api.group.janelas.Janela;
 import com.github.britooo.looca.api.group.janelas.JanelaGrupo;
 import com.github.britooo.looca.api.group.memoria.Memoria;
@@ -19,7 +20,9 @@ import com.github.britooo.looca.api.group.rede.RedeInterface;
 import com.github.britooo.looca.api.group.rede.RedeInterfaceGroup;
 import com.github.britooo.looca.api.group.rede.RedeParametros;
 import com.github.britooo.looca.api.group.sistema.Sistema;
+import com.mycompany.tentativa.looca.api.conexao.IdealDAO;
 import com.mycompany.tentativa.looca.api.conexao.Maquina;
+import com.mycompany.tentativa.looca.api.conexao.TokenDAO;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -31,13 +34,21 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.text.DecimalFormat;
 import java.time.format.DateTimeFormatter;
 import java.util.TimerTask;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import javax.swing.Timer;
+import com.slack.api.Slack;
+import com.slack.api.methods.request.chat.ChatPostMessageRequest;
+import com.slack.api.methods.response.chat.ChatPostMessageResponse;
 
 /**
  *
  * @author Cesar
  */
 public class LoocaApi {
+
+    Inovacao inovacao = new Inovacao();
+    IntegracaoSlack integraSlack = new IntegracaoSlack();
 
     private boolean existeDadosFKMaquina(int fkMaquina, int fkComponente, Connection connection) {
         PreparedStatement preparedStatement = null;
@@ -97,7 +108,7 @@ public class LoocaApi {
         Memoria memoria = looca.getMemoria();
 
         DiscoGrupo grupoDeDiscos = looca.getGrupoDeDiscos();
-        List<Disco> discos = grupoDeDiscos.getDiscos();
+        List<Volume> discos = grupoDeDiscos.getVolumes();
 
         Processador processador = looca.getProcessador();
 
@@ -109,18 +120,12 @@ public class LoocaApi {
         RedeInterfaceGroup gruposDeInterface = rede.getGrupoDeInterfaces();
         List<RedeInterface> interfaces = gruposDeInterface.getInterfaces();
 
-        JanelaGrupo gruposDeJanela = looca.getGrupoDeJanelas();
-        List<Janela> janelas = gruposDeJanela.getJanelas();
-        List<Janela> janelasVisiveis = gruposDeJanela.getJanelasVisiveis();
-        //System.out.println(sistema);
-        // System.out.println(memoria);
-
-        for (Disco disco : discos) {
-            Double tamanhoDisco = disco.getTamanho().doubleValue() / (1024 * 1024 * 1024);
+        for (Volume disco : discos) {
+            Double tamanhoDisco = disco.getTotal().doubleValue() / (1024.0 * 1024.0 * 1024.0);
             // Verificar se já existem dados da fk_maquina na tabela especificacao
             if (!existeDadosFKMaquina(m.getIdMaquina(), 3, conexao.conectaBD())) {
                 con.update("INSERT INTO especificacao (fk_maquina,fk_loja,fk_componente,data_ativacao_componente,capacidade) "
-                        + "values (?,?,?,?,?)", m.getIdMaquina(), m.getFkEmpresa(), formattedDateTime, tamanhoDisco);
+                        + "values (?,?,?,?,?)", m.getIdMaquina(), m.getFkEmpresa(), 3, formattedDateTime, tamanhoDisco);
             } else {
                 con.update("update especificacao set capacidade= ? where fk_maquina = ? and fk_componente = ?",
                         tamanhoDisco, m.getIdMaquina(), 3);
@@ -141,43 +146,57 @@ public class LoocaApi {
         if (!existeDadosFKMaquina(m.getIdMaquina(), 2, conexao.conectaBD())) {
             con.update("INSERT INTO especificacao (fk_maquina, fk_loja, fk_componente, data_ativacao_componente, capacidade) "
                     + "VALUES (?, ?, ?, ?, ?)",
-                    m.getIdMaquina() / 100000000, m.getFkEmpresa(), 2, formattedDateTime, frequenciaGigaHertz);
+                    m.getIdMaquina(), m.getFkEmpresa(), 2, formattedDateTime, frequenciaGigaHertz);
         } else {
             con.update("UPDATE especificacao SET capacidade = ? WHERE fk_maquina = ? AND fk_componente = ?",
                     frequenciaGigaHertz, m.getIdMaquina(), 2);
         }
 
-        for (Processo processo : processos) {
-//         conLocal.update("Insert into processo (pidProcesso,dtHora,usoCpu,usoMemoria) values"
-//                   + " (?,?,?,?);",
-//                 processo.getPid(),
-//                 dataHoraAtual,
-//                 processo.getUsoCpu(),
-//                 processo.getUsoMemoria()); //NOI18N
-            //  System.out.println(processo);
-        }
+        try {
+            Connection connection = conexao.conectaBD();
+            connection.setAutoCommit(false);
 
-        //System.out.println(redeParametros);
-        for (RedeInterface redeInterface : interfaces) {
-            con.update(String.format("Insert into rede (bytes_enviados, bytes_recebidos,nome) values (%d,%d,'%s');",
-                    redeInterface.getBytesEnviados(),
-                    redeInterface.getBytesEnviados(),
-                    redeInterface.getNomeExibicao()));
-//            conLocal.update(String.format("Insert into rede (bytes_enviados, bytes_recebidos,nome) values (%d,%d,'%s');",
-//                    redeInterface.getBytesEnviados(), 
-//                    redeInterface.getBytesEnviados(),
-//                    redeInterface.getNomeExibicao()));
-            //System.out.println(redeInterface);
-        }
+            String insertQuery = "INSERT INTO processo VALUES (?, ?, ?, ?, ?, ?, ?)";
+            PreparedStatement insertStatement = connection.prepareStatement(insertQuery);
 
-        for (Janela janela : janelas) {
-            System.out.println(janela);
-        }
+            for (Processo processo : processos) {
+                int pid = processo.getPid();
 
-        for (Janela janelaVisivel : janelasVisiveis) {
-            System.out.println(janelaVisivel);
-        }
+                String selectQuery = "SELECT COUNT(*) FROM processo WHERE pid = ?";
+                PreparedStatement selectStatement = connection.prepareStatement(selectQuery);
+                selectStatement.setInt(1, pid);
 
+                ResultSet resultSet = selectStatement.executeQuery();
+                resultSet.next();
+                int count = resultSet.getInt(1);
+
+                if (count == 0) {
+                    insertStatement.setInt(1, processo.getPid());
+                    insertStatement.setDouble(2, processo.getUsoCpu());
+                    insertStatement.setDouble(3, processo.getUsoMemoria());
+                    insertStatement.setInt(4, m.getIdMaquina());
+                    insertStatement.setInt(5, m.getFkEmpresa());
+                    insertStatement.setString(6, dataHoraAtual.format(formatter));
+                    insertStatement.setString(7, processo.getNome());
+                    insertStatement.addBatch();
+                } 
+
+                resultSet.close();
+                selectStatement.close();
+            }
+
+            insertStatement.executeBatch();
+
+            connection.commit();
+
+            insertStatement.close();
+            connection.close();
+        } catch (SQLException ex) {
+            Logger.getLogger(LoocaApi.class.getName()).log(Level.SEVERE, null, ex);
+        }
+           
+        System.out.println("Iniciando monitoramento...");
+        
         new java.util.Timer().scheduleAtFixedRate(new TimerTask() {
 
             @Override
@@ -188,6 +207,7 @@ public class LoocaApi {
                 LocalDateTime dataHoraAtual = LocalDateTime.now();
                 DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
                 String formattedDateTime = dataHoraAtual.format(formatter);
+                //Métricas de memória tanto local quanto na Azure
                 con.update("insert into metrica "
                         + "(captura,dt_hora_captura,fk_maquina,fk_loja,fk_componente,fk_unidade_medida)"
                         + "values(?,?,?,?,?,?)",
@@ -197,7 +217,34 @@ public class LoocaApi {
                         m.getFkEmpresa(),
                         1,
                         4);
+                conLocal.update("insert into metrica "
+                        + "(captura,dt_hora_captura,fk_maquina,fk_loja,fk_componente,fk_unidade_medida)"
+                        + "values(?,?,?,?,?,?)",
+                        porcentagemUsoMemoria,
+                        formattedDateTime,
+                        m.getIdMaquina(),
+                        m.getFkEmpresa(),
+                        1,
+                        4);
+                Double limiteToleravelMemoria = 0.0;
+                Double limiteToleravelProcessador = 0.0;
+                Double limiteToleravelDisco = 0.0;
 
+                try {
+                    IdealDAO ideal = new IdealDAO();
+
+                    limiteToleravelMemoria = ideal.getLimiteToleravel(m.getFkEmpresa(), 1);
+
+                    //Processador métricas
+                } catch (SQLException ex) {
+                    Logger.getLogger(LoocaApi.class.getName()).log(Level.SEVERE, null, ex);
+                }
+                if (porcentagemUsoMemoria > limiteToleravelMemoria) {
+                    integraSlack.receberMensagem(porcentagemUsoMemoria, m.getIdMaquina(), "memória");
+                    inovacao.executaInovacao();
+                }
+               
+                //Processador métricas
                 con.update("insert into metrica "
                         + "(captura,dt_hora_captura,fk_maquina,fk_loja,fk_componente,fk_unidade_medida)"
                         + "values(?,?,?,?,?,?)",
@@ -207,50 +254,83 @@ public class LoocaApi {
                         m.getFkEmpresa(),
                         2,
                         4);
-                for (Disco disco : discos) {
+                conLocal.update("insert into metrica "
+                        + "(captura,dt_hora_captura,fk_maquina,fk_loja,fk_componente,fk_unidade_medida)"
+                        + "values(?,?,?,?,?,?)",
+                        processador.getUso(),
+                        formattedDateTime,
+                        m.getIdMaquina(),
+                        m.getFkEmpresa(),
+                        2,
+                        4);
+
+                try {
+                    IdealDAO ideal = new IdealDAO();
+
+                    limiteToleravelProcessador = ideal.getLimiteToleravel(m.getFkEmpresa(), 2);
+
+                    //Processador métricas
+                } catch (SQLException ex) {
+                    Logger.getLogger(LoocaApi.class.getName()).log(Level.SEVERE, null, ex);
+                }
+                System.out.println(limiteToleravelProcessador);
+                if (processador.getUso() > limiteToleravelProcessador) {
+                    integraSlack.receberMensagem(processador.getUso(), m.getIdMaquina(), "processador");
+                }
+                
+                //Disco métricas
+
+                for (Volume disco : discos) {
+//                    Double porcentagemUsoDisco = (disco.getDisponivel().doubleValue() / disco.getTotal().doubleValue()) * 100.0;
+                    Double porcentagemUsoDisco = 40.0;
                     con.update("insert into metrica "
                             + "(captura,dt_hora_captura,fk_maquina,fk_loja,fk_componente,fk_unidade_medida)"
                             + "values(?,?,?,?,?,?)",
-                            disco.getTempoDeTransferencia(),
+                            porcentagemUsoDisco.floatValue(),
                             formattedDateTime,
                             m.getIdMaquina(),
                             m.getFkEmpresa(),
                             3,
                             4);
-                    System.out.println("Tempo de transferência: " + disco.getTempoDeTransferencia());
+                    conLocal.update("insert into metrica "
+                            + "(captura,dt_hora_captura,fk_componente,fk_loja,fk_componente,fk_unidade_medida)"
+                            + "values(?,?,?,?,?,?)",
+                            porcentagemUsoDisco.floatValue(),
+                            formattedDateTime,
+                            m.getIdMaquina(),
+                            m.getFkEmpresa(),
+                            3,
+                            3);
+
+                    try {
+                        IdealDAO ideal = new IdealDAO();
+
+                        limiteToleravelDisco = ideal.getLimiteToleravel(m.getFkEmpresa(), 3);
+
+                        //Processador métricas
+                    } catch (SQLException ex) {
+                        Logger.getLogger(LoocaApi.class.getName()).log(Level.SEVERE, null, ex);
+                    }
+                    if (porcentagemUsoDisco > limiteToleravelDisco) {
+                        integraSlack.receberMensagem(porcentagemUsoDisco, m.getIdMaquina(), "disco");
+                    }
                 }
-//                if (porcentagemUsoMemoria > 80.0) {
-//                    for (Processo processo : processos) {
-//                        int pid = processo.getPid();
-//                        if (pid > 1000) {
-//                            try {
-//                                // Converte o PID para uma string
-//                                String pidString = Integer.toString(pid);
-//
-//                                // Executa o comando "kill" para encerrar o processo pelo seu PID
-//                                ProcessBuilder processBuilder = new ProcessBuilder("kill -9", pidString);
-//                                Process process = processBuilder.start();
-//
-//                                // Verifica o código de saída do comando
-//                                int exitCode = process.waitFor();
-//
-//                                if (exitCode == 0) {
-//                                    System.out.println("Processo com PID " + pid + " encerrado com sucesso.");
-//                                } else {
-//                                    System.out.println("Ocorreu um erro ao tentar encerrar o processo com PID " + pid);
-//                                }
-//                            } catch (IOException | InterruptedException e) {
-//                                System.out.println("Ocorreu uma exceção ao tentar encerrar o processo com PID " + pid);
-//                                e.printStackTrace();
-//                            }
-//                        }
-//                    }
-//                }
-                System.out.println("Porcentagem memoria: " + porcentagemUsoMemoria);
-                System.out.println("Porcentagem uso CPU: " + processador.getUso());
+                for (RedeInterface redeInterface : interfaces) {
+                    Double mbUtilizadosEnviados = redeInterface.getBytesEnviados() / (1024.0 * 1024.0);
+                    Double mbUtilizadosRecebidos = redeInterface.getBytesRecebidos() / (1024.0 * 1024.0);
+                    con.update("Insert into rede (bytes_enviados, bytes_recebidos,fk_maquina, dt_hora) values (?,?,?,?);",
+                            mbUtilizadosEnviados,
+                            mbUtilizadosRecebidos,
+                            m.getIdMaquina(),
+                            dataHoraAtual);
+                    conLocal.update("Insert into rede (bytes_enviados, bytes_recebidos,fk_maquina, dt_hora) values (?,?,?,?);",
+                            mbUtilizadosEnviados,
+                            mbUtilizadosRecebidos,
+                            m.getIdMaquina(),
+                            dataHoraAtual);
+                }
             }
         },
-
-                 0, 5000);
+                0, 10000);
     }
 }
